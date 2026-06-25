@@ -25,7 +25,7 @@
  * The Cox-Sprague algorithm was originally developed in VBA by Witold Gesing <wgesing@gmail.com>
  *
  * This software may be copied and re-distributed freely.
- * If you make changes, please share them with the above authors.
+ * If you make improvements, please share them with the above authors.
  */
 
 function onOpen() {
@@ -84,6 +84,7 @@ function scoreSailors() {
   const arrResults     = resultsValues.slice(1); // strip header row
   const arrStarters  = resultsSheet.getRange('rangeStarters').getValues();
   const arrFinishers = resultsSheet.getRange('rangeFinishers').getValues();
+  const arrDates     = resultsSheet.getRange('rangeDates').getValues();
 
   let csSR, hpSR, avgSR, lowSR;
   if (colCoxSprague > 0) csSR  = loadScoreRange(resultsSheet, 'rangeCoxSprague');
@@ -125,9 +126,8 @@ function scoreSailors() {
   if (colLowPoint   > 0) writeScoreRange(resultsSheet, 'rangeLowPoint',   lowSR.rows, lowSR.header);
 
   if (colCoxSprague > 0) {
-    const raceHeaders   = resultsHeader.slice(colResults);
     const activeSailors = csDetails.filter(d => d !== null);
-    writeCSDetail(spreadSheet, activeSailors, arrStarters[0].length, arrStarters[0], raceHeaders);
+    writeCSDetail(spreadSheet, activeSailors, arrStarters[0].length, arrStarters[0], arrDates[0]);
   }
 
   // High-point systems rank high-to-low; low-point systems rank low-to-high.
@@ -369,17 +369,25 @@ function buildCSTable(original) {
 
 function writeCSDetail(spreadSheet, sailors, raceCount, startersRow, raceHeaders) {
   /**
-   * Builds (or rebuilds) the 'CS Detail' sheet with a per-race Cox-Sprague breakdown.
-   * Layout: races as rows, sailors as column groups of three (Num | Den | Ratio).
-   * Discarded races are shown with strikethrough + grey fill on a per-sailor basis
-   * (two sailors in the same race may discard different races).
-   * Unsailed races (absent from racesMap) appear as blank rows so numbering stays
-   * aligned with the RaceResults sheet.
+   * Builds (or rebuilds) the 'CS Detail' sheet with a transposed per-race Cox-Sprague breakdown.
+   * Layout: sailors as rows (2 rows each), races as column pairs (CS Raw | CS Ratio).
+   * Totals appear in the first pair of columns after the sailor name.
+   *
+   * Column structure (1-indexed):
+   *   Col 1         : Sailor Name — merged across 2 rows, vertically centred
+   *   Cols 2–3      : Totals — CS Raw (num/den fraction) | CS Ratio (final score)
+   *   Cols 4–5      : Race 1 — CS Raw | CS Ratio
+   *   Cols 6–7      : Race 2 — CS Raw | CS Ratio  … and so on
+   *
+   * For each CS Raw column: row 1 holds the numerator with a bottom border (fraction bar);
+   * row 2 holds the denominator. The CS Ratio column merges both rows, value centred.
+   * Discarded races: strikethrough + grey fill across the full 2×2 cell block.
+   * Unsailed races: blank (absent from racesMap), preserving column alignment.
    *
    * @param {Spreadsheet} spreadSheet  - active spreadsheet
    * @param {Array}       sailors      - [{ name, detail }] — nulls already filtered by caller
    * @param {number}      raceCount    - total number of race columns
-   * @param {Array}       startersRow  - arrStarters[0]: starters count per race column
+   * @param {Array}       startersRow  - starters per race (unused in this layout, kept for API consistency)
    * @param {Array}       raceHeaders  - race column header labels from rangeResults
    */
   if (sailors.length === 0 || raceCount === 0) return;
@@ -391,51 +399,49 @@ function writeCSDetail(spreadSheet, sailors, raceCount, startersRow, raceHeaders
     sheet.clear();
   }
 
-  const totalCols    = 2 + sailors.length * 3;
-  const dataStartRow = 3;                              // rows 1–2 are headers
-  const totalsRow    = dataStartRow + raceCount + 1;  // +1 skips a blank separator row
-  const totalRows    = totalsRow;
+  const totalCols    = 3 + raceCount * 2;     // 1 name + 2 totals + 2 per race
+  const totalRows    = 2 + sailors.length * 2; // 2 headers + 2 per sailor
+  const dataStartRow = 3;                      // rows 1–2 are headers
 
   // ── Build data grid ───────────────────────────────────────────────────────
 
   const grid = Array.from({ length: totalRows }, () => Array(totalCols).fill(''));
 
-  // Header row 1: sailor names in the first column of each 3-column group
-  for (let s = 0; s < sailors.length; s++) {
-    grid[0][2 + s * 3] = sailors[s].name;
-  }
-
-  // Header row 2: column labels
-  grid[1][0] = 'Race';
-  grid[1][1] = 'Starters';
-  for (let s = 0; s < sailors.length; s++) {
-    grid[1][2 + s * 3]     = 'CS Score';
-    grid[1][2 + s * 3 + 1] = 'CS Max';
-    grid[1][2 + s * 3 + 2] = 'Ratio';
-  }
-
-  // Race rows — unsailed races (absent from racesMap) remain blank
+  // Header row 1: Sailor Name | Totals (merged across 2) | race labels (each merged across 2)
+  grid[0][0] = 'Sailor Name';
+  grid[0][1] = 'Totals';
   for (let r = 0; r < raceCount; r++) {
-    grid[r + 2][0] = raceHeaders[r] || `Race ${r + 1}`;
-    grid[r + 2][1] = startersRow[r];
-    for (let s = 0; s < sailors.length; s++) {
+    grid[0][3 + r * 2] = raceHeaders[r] || `Race ${r + 1}`;
+  }
+
+  // Header row 2: blank | CS Raw | CS Ratio | (repeated per race)
+  grid[1][1] = 'CS Table';
+  grid[1][2] = 'CS Ratio';
+  for (let r = 0; r < raceCount; r++) {
+    grid[1][3 + r * 2]     = 'CS Table';
+    grid[1][3 + r * 2 + 1] = 'CS Ratio';
+  }
+
+  // Sailor rows (2 rows each)
+  for (let s = 0; s < sailors.length; s++) {
+    const g1 = 2 + s * 2; // 0-indexed grid row 1 for this sailor
+    const g2 = g1 + 1;
+
+    grid[g1][0] = sailors[s].name;               // merged vertically below
+
+    grid[g1][1] = sailors[s].detail.numTotal;    // bottom border applied below
+    grid[g2][1] = sailors[s].detail.denTotal;
+    grid[g1][2] = sailors[s].detail.score;       // merged vertically below
+
+    for (let r = 0; r < raceCount; r++) {
       const rd = sailors[s].detail.racesMap[r];
       if (rd) {
-        grid[r + 2][2 + s * 3]     = rd.num;
-        grid[r + 2][2 + s * 3 + 1] = rd.den;
-        grid[r + 2][2 + s * 3 + 2] = rd.ratio;
+        grid[g1][3 + r * 2]     = rd.num;        // bottom border applied below
+        grid[g2][3 + r * 2]     = rd.den;
+        grid[g1][3 + r * 2 + 1] = rd.ratio;     // merged vertically below
       }
+      // unsailed: cells remain blank
     }
-  }
-
-  // Blank separator row (grid[raceCount + 2]) is already empty
-
-  // Totals row — score appears in the Ratio column of the same row
-  grid[totalsRow - 1][0] = 'Totals';
-  for (let s = 0; s < sailors.length; s++) {
-    grid[totalsRow - 1][2 + s * 3]     = sailors[s].detail.numTotal;
-    grid[totalsRow - 1][2 + s * 3 + 1] = sailors[s].detail.denTotal;
-    grid[totalsRow - 1][2 + s * 3 + 2] = sailors[s].detail.score;
   }
 
   // ── Write data in a single call ───────────────────────────────────────────
@@ -444,9 +450,51 @@ function writeCSDetail(spreadSheet, sailors, raceCount, startersRow, raceHeaders
 
   // ── Merges ────────────────────────────────────────────────────────────────
 
-  for (let s = 0; s < sailors.length; s++) {
-    sheet.getRange(1, 3 + s * 3, 1, 3).merge(); // sailor name
+  // Header row 1: Totals and each race label centred across their 2-column pair
+  sheet.getRange(1, 2, 1, 2).merge();
+  for (let r = 0; r < raceCount; r++) {
+    sheet.getRange(1, 4 + r * 2, 1, 2).merge();
   }
+
+  // Sailor rows: name, totals score, and each race ratio merged vertically (2 rows × 1 col)
+  for (let s = 0; s < sailors.length; s++) {
+    const sheetRow = dataStartRow + s * 2; // 1-indexed
+    sheet.getRange(sheetRow, 1, 2, 1).merge(); // sailor name
+    sheet.getRange(sheetRow, 3, 2, 1).merge(); // totals score
+    for (let r = 0; r < raceCount; r++) {
+      sheet.getRange(sheetRow, 5 + r * 2, 2, 1).merge(); // race ratio
+    }
+  }
+
+  // ── Vertical alignment ────────────────────────────────────────────────────
+
+  sheet.getRange(dataStartRow, 1, sailors.length * 2, totalCols).setVerticalAlignment('middle');
+  sheet.getRange(dataStartRow, 2, sailors.length * 2, totalCols - 1).setHorizontalAlignment('center');
+
+  // ── Bottom borders on numerator cells (fraction bar effect) ──────────────
+
+  const borderA1s = [];
+  for (let s = 0; s < sailors.length; s++) {
+    const sheetRow = dataStartRow + s * 2;
+    borderA1s.push(sheet.getRange(sheetRow, 2, 1, 1).getA1Notation()); // totals num
+    for (let r = 0; r < raceCount; r++) {
+      if (sailors[s].detail.racesMap[r]) {
+        borderA1s.push(sheet.getRange(sheetRow, 4 + r * 2, 1, 1).getA1Notation()); // race num
+      }
+    }
+  }
+  if (borderA1s.length > 0) {
+    sheet.getRangeList(borderA1s).setFontLine('underline');
+  }
+
+  // ── Number formats — ratios and scores to 3 decimal places ───────────────
+
+  const fmtA1s = [];
+  fmtA1s.push(sheet.getRange(dataStartRow, 3, sailors.length * 2, 1).getA1Notation()); // totals score col
+  for (let r = 0; r < raceCount; r++) {
+    fmtA1s.push(sheet.getRange(dataStartRow, 5 + r * 2, sailors.length * 2, 1).getA1Notation());
+  }
+  sheet.getRangeList(fmtA1s).setNumberFormat('0.000');
 
   // ── Header formatting ─────────────────────────────────────────────────────
 
@@ -454,46 +502,39 @@ function writeCSDetail(spreadSheet, sailors, raceCount, startersRow, raceHeaders
     .setFontWeight('bold')
     .setBackground('#c9daf8')
     .setHorizontalAlignment('center');
-  sheet.getRange(2, 1, 1, 2).setHorizontalAlignment('left'); // Race / Starters labels
-
-  // ── Number formats ────────────────────────────────────────────────────────
-  // Ratio columns (one per sailor) + the score cells — all to 3 decimal places.
-
-  const fmtA1s = [];
-  for (let s = 0; s < sailors.length; s++) {
-    fmtA1s.push(sheet.getRange(dataStartRow, 5 + s * 3, raceCount, 1).getA1Notation());
-    fmtA1s.push(sheet.getRange(totalsRow,    5 + s * 3, 1,         1).getA1Notation());
-  }
-  sheet.getRangeList(fmtA1s).setNumberFormat('0.000');
-
-  // ── Totals and score row formatting ───────────────────────────────────────
-
-  sheet.getRange(totalsRow, 1, 1, totalCols).setFontWeight('bold');
+  sheet.getRange(1, 1, 2, 1).setHorizontalAlignment('left'); // Sailor Name label
 
   // ── Discard formatting ────────────────────────────────────────────────────
-  // Collect all discarded cell ranges across all sailors into one RangeList call.
+  // Covers the full 2-row × 2-col block (CS Raw num/den + CS Ratio) per discarded race.
 
-  const discardA1s = [];
+  const discardRawA1s   = [];
+  const discardRatioA1s = [];
   for (let s = 0; s < sailors.length; s++) {
-    const numCol = 3 + s * 3;
+    const sheetRow = dataStartRow + s * 2;
     for (let r = 0; r < raceCount; r++) {
       const rd = sailors[s].detail.racesMap[r];
       if (rd && rd.discarded) {
-        discardA1s.push(sheet.getRange(r + dataStartRow, numCol, 1, 3).getA1Notation());
+        discardRawA1s.push(sheet.getRange(sheetRow, 4 + r * 2, 2, 1).getA1Notation());   // num + den: grey only
+        discardRatioA1s.push(sheet.getRange(sheetRow, 5 + r * 2, 2, 1).getA1Notation()); // ratio: strikethrough + grey
       }
     }
   }
-  if (discardA1s.length > 0) {
-    sheet.getRangeList(discardA1s)
+  if (discardRawA1s.length > 0) {
+    sheet.getRangeList(discardRawA1s)
+      .setFontColor('#999999')
+      .setBackground('#f5f5f5');
+  }
+  if (discardRatioA1s.length > 0) {
+    sheet.getRangeList(discardRatioA1s)
       .setFontLine('line-through')
       .setFontColor('#999999')
       .setBackground('#f5f5f5');
   }
 
-  // ── Freeze and resize ─────────────────────────────────────────────────────
+  // ── Column widths, freeze ─────────────────────────────────────────────────
 
+  sheet.setColumnWidth(1, 230);
+  sheet.setColumnWidths(2, totalCols - 1, 75);
   sheet.setFrozenRows(2);
   sheet.setFrozenColumns(1);
-  sheet.setColumnWidth(1, 125);
-  sheet.setColumnWidths(2, totalCols - 1, 75);
 }
